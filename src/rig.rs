@@ -60,10 +60,10 @@ fn mover_profiles(dir: &Path) -> HashSet<String> {
     for e in rd.flatten() {
         let Ok(text) = std::fs::read_to_string(e.path()) else { continue };
         let Ok(p) = serde_json::from_str::<Value>(text.trim_start_matches('\u{feff}')) else { continue };
-        if is_mover(&p) {
-            if let Some(id) = p["id"].as_str() {
-                out.insert(id.to_string());
-            }
+        if is_mover(&p)
+            && let Some(id) = p["id"].as_str()
+        {
+            out.insert(id.to_string());
         }
     }
     out

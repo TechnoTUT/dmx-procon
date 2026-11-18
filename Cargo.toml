@@ -1,0 +1,16 @@
+[package]
+name = "procon-light"
+version = "0.1.0"
+edition = "2024"
+description = "Pro Controller のようなゲームパッドで、dmxctl の照明を OSC で動かす"
+
+[dependencies]
+# コントローラー(Pro Controller を有線・Bluetooth の両方で読める。ジャイロ・振動も使える)。
+# SDL2 はソースからビルドして実行ファイルに組み込む(動かすPCに SDL2 を入れなくてよい。ビルドに cmake が要る)
+sdl2 = { version = "0.38", features = ["bundled", "static-link", "hidapi"] }
+serde_json = "1"
+ctrlc = "3"
+
+[profile.release]
+opt-level = 3
+strip = true

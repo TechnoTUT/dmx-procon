@@ -7,7 +7,8 @@
 //! | 左スティック | ムービングの向き。倒した方へ動き、離すと止まる |
 //! | 左スティック押し込み | ムービングを正面に戻す |
 //! | ZR / ZL(押している間) | 白でフラッシュ / 今の色でフラッシュ |
-//! | R / L | タップテンポ / 頭出し |
+//! | R | ムービングのゴボを次へ(オープン → ゴボ1 → … → オープン) |
+//! | L(押している間) | ムービングを暗くする。離すと元の明るさに戻す |
 //! | A | メイン色とサブ色を入れ替え |
 //! | B | 暗転フェード(押すたびに暗くする・戻す) |
 //! | X | ランダムな色 |
@@ -94,6 +95,13 @@ pub struct Controller {
     /// 向きを dmxctl に送っているか(左スティック・ジャイロで動かすまでは送らない。起動しただけで向きを変えないため)
     pub move_on: bool,
     pub movers: Vec<u32>,
+    /// ムービングの元の明るさ(L を離したときに戻す値)。無いムービングは 1.0 に戻す
+    pub dimmers: Vec<(u32, f32)>,
+    /// R で切り替えるゴボ(名前と値)と、今のゴボ
+    pub gobos: Vec<(String, f32)>,
+    pub gobo_index: Option<usize>,
+    /// L でムービングを暗くしているか
+    pub movers_dark: bool,
     pub pixel_fx: Vec<String>,
     /// 今 ON にしている LED バーのエフェクト(pixel_fx の番号)
     pub fx_index: Option<usize>,
@@ -122,6 +130,10 @@ impl Controller {
             tilt: 0.5,
             move_on: false,
             movers,
+            dimmers: Vec::new(),
+            gobos: Vec::new(),
+            gobo_index: None,
+            movers_dark: false,
             pixel_fx,
             fx_index: None,
             last: String::new(),
@@ -132,6 +144,24 @@ impl Controller {
             sent_move: None,
             seed: seed | 1,
         }
+    }
+
+    /// ムービングの元の明るさと、切り替えるゴボを渡す(dmxctl の設定から読んだもの)
+    pub fn with_mover_info(mut self, dimmers: Vec<(u32, f32)>, gobos: Vec<(String, f32)>) -> Self {
+        self.dimmers = dimmers;
+        self.gobos = gobos;
+        self
+    }
+
+    /// ムービングを暗くする・元の明るさに戻す
+    fn movers_dimmer(&self, dark: bool) -> Vec<Msg> {
+        self.movers
+            .iter()
+            .map(|id| {
+                let restore = self.dimmers.iter().find(|d| d.0 == *id).map_or(1.0, |d| d.1);
+                Msg::f(&format!("/dmx/fixture/{id}/dimmer"), if dark { 0.0 } else { restore })
+            })
+            .collect()
     }
 
     /// 今の色(0〜255)
@@ -154,10 +184,14 @@ impl Controller {
             self.paused = !self.paused;
             self.last = if self.paused { "一時停止".into() } else { "再開".into() };
             rumble = Some(Rumble { strength: 0.3, ms: 80 });
-            // 止める前に押していたフラッシュは、離したことにしておく
+            // 止める前に押していたフラッシュ・暗くしていたムービングは、離したことにしておく
             if self.paused {
                 out.push(Msg::f("/dmx/flash", 0.0));
                 out.push(Msg::f("/dmx/flash/color", 0.0));
+                if self.movers_dark {
+                    self.movers_dark = false;
+                    out.extend(self.movers_dimmer(false));
+                }
             }
             return (out, rumble);
         }
@@ -269,15 +303,26 @@ impl Controller {
         }
 
         // ---- 1回押す ----
-        if p.contains(&Btn::R) {
-            out.push(Msg::new("/dmx/tap", vec![]));
-            self.last = "タップ".into();
+        if p.contains(&Btn::R) && !self.gobos.is_empty() && !self.movers.is_empty() {
+            let next = self.gobo_index.map_or(1.min(self.gobos.len() - 1), |i| (i + 1) % self.gobos.len());
+            let (name, v) = self.gobos[next].clone();
+            for id in &self.movers {
+                out.push(Msg::f(&format!("/dmx/fixture/{id}/gobo"), v));
+            }
+            self.gobo_index = Some(next);
+            self.last = format!("ゴボ: {name}");
             rumble = Some(Rumble { strength: 0.35, ms: 40 });
         }
-        if p.contains(&Btn::L) {
-            out.push(Msg::new("/dmx/resync", vec![]));
-            self.last = "頭出し".into();
-            rumble = Some(Rumble { strength: 0.35, ms: 40 });
+        if !self.movers.is_empty() {
+            if p.contains(&Btn::L) {
+                self.movers_dark = true;
+                out.extend(self.movers_dimmer(true));
+                self.last = "ムービングを暗く".into();
+            }
+            if r.contains(&Btn::L) && self.movers_dark {
+                self.movers_dark = false;
+                out.extend(self.movers_dimmer(false));
+            }
         }
         if p.contains(&Btn::A) {
             out.push(Msg::new("/dmx/swap", vec![]));
@@ -313,9 +358,12 @@ impl Controller {
         (out, rumble)
     }
 
-    /// 終わるときに送るもの(押したままのフラッシュを戻す)
+    /// 終わるときに送るもの(押したままのフラッシュと、暗くしたムービングを戻す)
     pub fn release_all(&self) -> Vec<Msg> {
         let mut out = Vec::new();
+        if self.movers_dark {
+            out.extend(self.movers_dimmer(false));
+        }
         if self.prev.contains(&Btn::ZR) {
             out.push(Msg::f("/dmx/flash", 0.0));
         }
@@ -483,6 +531,34 @@ mod tests {
         assert_eq!(addrs(&out), vec!["/dmx/rgb/off"]);
         let (out, _) = c.step(&Input::default(), 0.1);
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn r_steps_through_gobos_starting_after_open() {
+        let gobos = vec![("オープン".to_string(), 0.0), ("ゴボ1".to_string(), 0.1), ("ゴボ2".to_string(), 0.2)];
+        let mut c = ctl().with_mover_info(Vec::new(), gobos);
+        let press = |c: &mut Controller| {
+            let (out, _) = c.step(&held(&[Btn::R]), 0.01);
+            c.step(&Input::default(), 0.01);
+            out
+        };
+        // 最初はゴボ1。2台とも同じゴボにする
+        assert_eq!(press(&mut c), vec![Msg::f("/dmx/fixture/1/gobo", 0.1), Msg::f("/dmx/fixture/3/gobo", 0.1)]);
+        assert_eq!(press(&mut c)[0], Msg::f("/dmx/fixture/1/gobo", 0.2));
+        // 一周してオープンへ
+        assert_eq!(press(&mut c)[0], Msg::f("/dmx/fixture/1/gobo", 0.0));
+    }
+
+    #[test]
+    fn l_darkens_movers_only_while_held_and_restores_their_level() {
+        let mut c = ctl().with_mover_info(vec![(1, 0.5)], Vec::new());
+        let (dark, _) = c.step(&held(&[Btn::L]), 0.01);
+        assert_eq!(dark, vec![Msg::f("/dmx/fixture/1/dimmer", 0.0), Msg::f("/dmx/fixture/3/dimmer", 0.0)]);
+        assert_eq!(c.release_all(), vec![Msg::f("/dmx/fixture/1/dimmer", 0.5), Msg::f("/dmx/fixture/3/dimmer", 1.0)]);
+        let (back, _) = c.step(&Input::default(), 0.01);
+        // 設定から読んだ明るさに戻す。読めなかったムービングは最大に
+        assert_eq!(back, vec![Msg::f("/dmx/fixture/1/dimmer", 0.5), Msg::f("/dmx/fixture/3/dimmer", 1.0)]);
+        assert!(c.release_all().is_empty());
     }
 
     #[test]

@@ -90,7 +90,7 @@ fn run(opts: Options) -> Result<(), String> {
     let sender = osc::Sender::new(&to).map_err(|e| e.to_string())?;
 
     if opts.demo {
-        return run_demo(&sender, Controller::new(movers, found.pixel_fx, 1));
+        return run_demo(&sender, Controller::new(movers, found.pixel_fx, 1).with_mover_info(found.dimmers, found.gobos));
     }
 
     // SDL の設定は、初期化の前に決める
@@ -113,7 +113,7 @@ fn run(opts: Options) -> Result<(), String> {
     }
 
     let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(1);
-    let mut ctl = Controller::new(movers.clone(), found.pixel_fx.clone(), seed);
+    let mut ctl = Controller::new(movers.clone(), found.pixel_fx.clone(), seed).with_mover_info(found.dimmers.clone(), found.gobos.clone());
     println!("procon-light: 送り先 {}{}", sender.to(), if opts.test { "(テスト: 送らない)" } else { "" });
     println!(
         "ムービング {}台{} / LED バーのエフェクト {}個",
@@ -121,7 +121,7 @@ fn run(opts: Options) -> Result<(), String> {
         if movers.is_empty() { String::new() } else { format!("(番号 {})", movers.iter().map(u32::to_string).collect::<Vec<_>>().join(",")) },
         found.pixel_fx.len()
     );
-    println!("右スティック=色  左スティック=向き  ZR/ZL=フラッシュ  R=タップ  L=頭出し  A=入れ替え  B=暗転  X=ランダム色  Y=色相を回す");
+    println!("右スティック=色  左スティック=向き  ZR/ZL=フラッシュ  R=ゴボ  L=ムービングを暗く(押す間)  A=入れ替え  B=暗転  X=ランダム色  Y=色相を回す");
     println!("十字上下=明るさ  十字左右=LEDエフェクト  −=パレットの色に戻す  +=一時停止  キャプチャ=ジャイロで狙う  Ctrl+C=終わる");
 
     let mut pad: Option<Pad> = None;

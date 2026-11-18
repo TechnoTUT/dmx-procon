@@ -7,7 +7,7 @@
 //! | 8〜14秒 | 左スティックで、ムービングを右・左・上・下へ |
 //! | 14〜16秒 | ZR を0.5秒ごとに短く押す(白フラッシュ) |
 //! | 16〜20秒 | 右スティックを少しだけ倒して回す(淡い色) |
-//! | 20〜24秒 | X(ランダムな色)を1秒ごと、十字キーの右(LED のエフェクト)を2秒ごと |
+//! | 20〜24秒 | X(ランダムな色)と R(ゴボを次へ)を1秒ごと、十字キーの右(LED のエフェクト)を2秒ごと。最後の0.6秒は L(ムービングを暗く) |
 
 use crate::control::{Btn, Input};
 use std::f32::consts::TAU;
@@ -47,8 +47,14 @@ pub fn input_at(t: f32) -> Input {
             if tap(1.0, 20.0) {
                 i.held.push(Btn::X);
             }
+            if tap(1.0, 20.3) {
+                i.held.push(Btn::R);
+            }
             if tap(2.0, 20.5) {
                 i.held.push(Btn::Right);
+            }
+            if t >= 23.4 {
+                i.held.push(Btn::L);
             }
         }
     }
@@ -62,7 +68,8 @@ mod tests {
 
     #[test]
     fn one_loop_sends_color_moves_flashes_and_effects() {
-        let mut c = Controller::new(vec![1], vec!["オーロラ".into(), "星空".into()], 7);
+        let gobos = vec![("オープン".to_string(), 0.0), ("ゴボ1".to_string(), 0.05)];
+        let mut c = Controller::new(vec![1], vec!["オーロラ".into(), "星空".into()], 7).with_mover_info(vec![(1, 1.0)], gobos);
         let mut addrs = std::collections::BTreeSet::new();
         let dt = 1.0 / 120.0;
         let mut t = 0.0;
@@ -71,10 +78,11 @@ mod tests {
             addrs.extend(out.into_iter().map(|m| m.addr));
             t += dt;
         }
-        for a in ["/dmx/main/rgb", "/dmx/fixture/1/pan", "/dmx/fixture/1/tilt", "/dmx/flash", "/dmx/effect"] {
+        for a in ["/dmx/main/rgb", "/dmx/fixture/1/pan", "/dmx/fixture/1/tilt", "/dmx/flash", "/dmx/effect", "/dmx/fixture/1/gobo", "/dmx/fixture/1/dimmer"] {
             assert!(addrs.contains(a), "{a} が送られていない: {addrs:?}");
         }
-        // フラッシュは押しっぱなしで終わらない
+        // ひとまわりの終わりは L を押したまま。次のひとまわりの始めで離れる
+        c.step(&input_at(LOOP_SECS), dt);
         assert!(c.release_all().is_empty());
     }
 }

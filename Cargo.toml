@@ -11,7 +11,8 @@ sdl3 = { version = "0.22", default-features = false, features = ["build-from-sou
 # ウィンドウ(dmxctl と同じ eframe)
 eframe = { version = "0.36.2", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"] }
 # SDL3 はコントローラーを読むのにだけ使う。画面・音などは切ってビルドを軽くする(ウィンドウは eframe が出す)
-sdl3-sys = { version = "0.7", features = ["no-sdl-audio", "no-sdl-video", "no-sdl-gpu", "no-sdl-render", "no-sdl-camera", "no-sdl-dialog", "no-sdl-tray"] }
+# sdl-unix-console-build: Linux で、X11・Wayland の開発用ライブラリが無くてもビルドできるようにする(SDL では画面を作らないので要らない)
+sdl3-sys = { version = "0.7", features = ["no-sdl-audio", "no-sdl-video", "no-sdl-gpu", "no-sdl-render", "no-sdl-camera", "no-sdl-dialog", "no-sdl-tray", "sdl-unix-console-build"] }
 serde_json = "1"
 ctrlc = "3"
 # Switch 2 Pro Controller(USB)。始めの合図を libusb で送り、ボタンなどは HID として読む。

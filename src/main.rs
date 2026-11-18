@@ -8,6 +8,7 @@
 #![allow(linker_messages)]
 
 mod control;
+mod demo;
 mod osc;
 mod rig;
 mod switch2;
@@ -21,20 +22,22 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "procon-light [--to HOST:PORT] [--movers 1,3,4] [--test]
+const USAGE: &str = "procon-light [--to HOST:PORT] [--movers 1,3,4] [--test] [--demo]
   --to HOST:PORT   dmxctl の OSC 受信の送り先(既定: 127.0.0.1 と dmxctl の設定の OSC ポート)
   --movers ID,...  左スティックで動かすムービングの番号(既定: dmxctl の設定から、パン・チルトのある機材。レーザーは除く)
   --test           送らずに、コントローラーの入力だけを見る
+  --demo           コントローラーを使わず、決まった操作(色を回す・ムービングを動かす・フラッシュなど)を送り続ける
 ";
 
 struct Options {
     to: Option<String>,
     movers: Option<Vec<u32>>,
     test: bool,
+    demo: bool,
 }
 
 fn parse_args() -> Result<Options, String> {
-    let mut o = Options { to: None, movers: None, test: false };
+    let mut o = Options { to: None, movers: None, test: false, demo: false };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -45,6 +48,7 @@ fn parse_args() -> Result<Options, String> {
                 o.movers = Some(ids.map_err(|_| format!("--movers の番号が読めません: {v}"))?);
             }
             "--test" => o.test = true,
+            "--demo" => o.demo = true,
             "-h" | "--help" | "help" => {
                 print!("{USAGE}");
                 std::process::exit(0);
@@ -84,6 +88,10 @@ fn run(opts: Options) -> Result<(), String> {
     let movers = opts.movers.clone().unwrap_or(found.movers);
     let to = opts.to.clone().unwrap_or_else(|| format!("127.0.0.1:{osc_port}"));
     let sender = osc::Sender::new(&to).map_err(|e| e.to_string())?;
+
+    if opts.demo {
+        return run_demo(&sender, Controller::new(movers, found.pixel_fx, 1));
+    }
 
     // SDL の設定は、初期化の前に決める
     // 端末から動かすのでウィンドウが無い。手前のアプリでなくても入力を受ける
@@ -216,6 +224,42 @@ fn run(opts: Options) -> Result<(), String> {
         for m in ctl.release_all() {
             sender.send(&m);
         }
+    }
+    println!("\n終わりました");
+    Ok(())
+}
+
+/// `--demo`: 決まった操作を、本物と同じ処理に通して送り続ける(Ctrl+C で終わる)
+fn run_demo(sender: &osc::Sender, mut ctl: Controller) -> Result<(), String> {
+    let stop = Arc::new(AtomicBool::new(false));
+    {
+        let stop = stop.clone();
+        let _ = ctrlc::set_handler(move || stop.store(true, Ordering::SeqCst));
+    }
+    println!("procon-light: デモ。送り先 {}。{}秒でひとまわりします。Ctrl+C で終わる", sender.to(), demo::LOOP_SECS);
+    let start = Instant::now();
+    let mut last = start;
+    let mut drawn = start - Duration::from_secs(1);
+    let mut notice = String::new();
+    while !stop.load(Ordering::SeqCst) {
+        let now = Instant::now();
+        let dt = now.duration_since(last).as_secs_f32().min(0.1);
+        last = now;
+        let (msgs, _) = ctl.step(&demo::input_at(now.duration_since(start).as_secs_f32()), dt);
+        for m in &msgs {
+            sender.send(m);
+        }
+        if !ctl.last.is_empty() {
+            notice = std::mem::take(&mut ctl.last);
+        }
+        if drawn.elapsed() >= Duration::from_millis(66) {
+            draw(&ctl, true, &notice);
+            drawn = Instant::now();
+        }
+        std::thread::sleep(Duration::from_millis(4));
+    }
+    for m in ctl.release_all() {
+        sender.send(&m);
     }
     println!("\n終わりました");
     Ok(())

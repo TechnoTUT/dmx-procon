@@ -57,12 +57,13 @@ cargo run --release
 ## オプション
 
 ```
-procon-light [--to HOST:PORT] [--movers 1,3,4] [--test]
+procon-light [--to HOST:PORT] [--movers 1,3,4] [--test] [--demo]
 ```
 
 - `--to`: dmxctl の OSC の送り先です。既定は `127.0.0.1` と、dmxctl の設定にある OSC のポートです。dmxctl が別のPCで動いているときに使います
 - `--movers`: 左スティックで動かすムービングの番号です。番号は dmxctl のパッチタブの ID です。既定では、dmxctl の設定から、パン・チルトがあって ARM の要らない機材を選びます。レーザーは選びません
 - `--test`: 何も送らずに、コントローラーの入力だけを見ます。ボタンの割り当てを確かめるときに使います
+- `--demo`: コントローラーを使わずに、決まった操作を送り続けます。色を一周させる、ムービングを上下左右に動かす、フラッシュする、などを24秒でひとまわりします。照明やシミュレータにちゃんと届くかを確かめるときに使います
 
 dmxctl の設定は `~/Library/Application Support/dmxctl/` から読みます。dmxctl と同じく、`DMXCTL_CONFIG_DIR` で場所を変えられます。
 
@@ -86,4 +87,5 @@ Switch 2 Pro Controller だけは、このツールで直接読みます。SDL3 
 | `src/control.rs` | 入力から送るものを決める。操作の割り当てはここ。テストあり |
 | `src/osc.rs` | OSC を UDP で送る |
 | `src/rig.rs` | dmxctl の設定から、ムービングと LED バーのエフェクトを探す |
+| `src/demo.rs` | `--demo` で送る、決まった操作 |
 | `src/switch2.rs` | Switch 2 Pro Controller を USB で読む。最初の合図と、値の並びの読み方 |

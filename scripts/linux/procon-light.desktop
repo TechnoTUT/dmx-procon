@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=procon-light
+Comment=Pro Controller で dmxctl の照明を動かす
+Exec=procon-light
+Terminal=false
+Categories=AudioVideo;

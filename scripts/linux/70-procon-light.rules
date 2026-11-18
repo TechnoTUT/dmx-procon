@@ -1,0 +1,8 @@
+# procon-light: ログインしている人が、Nintendo のコントローラーを管理者の権限なしで使えるようにする。
+#   sudo cp 70-procon-light.rules /etc/udev/rules.d/ && sudo udevadm control --reload && sudo udevadm trigger
+# Switch 2 Pro Controller(USB)は、始めの合図を USB で直接送る(libusb)ので、USB の機器そのものにも許可が要る
+SUBSYSTEM=="usb", ATTRS{idVendor}=="057e", ATTRS{idProduct}=="2069", TAG+="uaccess"
+KERNEL=="hidraw*", ATTRS{idVendor}=="057e", ATTRS{idProduct}=="2069", TAG+="uaccess"
+# Switch の Pro Controller(USB・Bluetooth)
+KERNEL=="hidraw*", ATTRS{idVendor}=="057e", ATTRS{idProduct}=="2009", TAG+="uaccess"
+KERNEL=="hidraw*", KERNELS=="*057E:2009*", TAG+="uaccess"

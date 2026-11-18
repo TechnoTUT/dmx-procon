@@ -4,17 +4,28 @@ Nintendo Switch の Pro Controller のようなゲームパッドで、照明を
 
 照明への出力は [dmxctl](https://github.com/TechnoTUT/dmxctl) が受け持ちます。このツールはコントローラーの操作を OSC にして dmxctl に送るだけなので、USB-DMX や Art-Net は今までどおり dmxctl につないだままで使えます。レーザーの安全の処理も、dmxctl の中をそのまま通ります。
 
+## 入れ方
+
+[Releases](https://github.com/TechnoTUT/dmx-procon/releases) から、使う PC のものを落とします。
+
+| PC | ファイル | 使い方 |
+|---|---|---|
+| Mac(Apple Silicon / Intel) | `procon-light-mac.zip` | 展開して `procon-light.app` を「アプリケーション」へ。初めて開くときは、右クリック →「開く」 |
+| Windows 10 / 11 | `procon-light-windows-x86_64.exe` | ダブルクリックで起動 |
+| Linux(Debian 12 / Ubuntu 24.04 以降) | `procon-light-linux-x86_64.tar.gz`(普通の PC)/ `-arm64`(Raspberry Pi など) | 展開して `./procon-light`。最初に1回、中の `README.txt` のとおり udev のルールを入れる |
+
 ## 使い方
 
 1. dmxctl の設定で、OSC 受信を ON にします。ポートの既定は 9000 です
 2. コントローラーをつなぎます。つなぎ方はコントローラーによって違います。下の「使えるコントローラー」を見てください
-3. このツールを起動します
+3. procon-light を起動します
 
-```
-cargo run --release
-```
+ウィンドウに、今の色・明るさ・ムービングの向きと、最後にした操作が出ます。下の「ボタンの割り当て」を開くと、割り当ての一覧が見られます。
 
-端末の1行に、今の色・明るさ・ムービングの向きと、最後にした操作が出ます。終わるときは Ctrl+C です。押していたフラッシュは戻してから終わります。
+- **送り先**: dmxctl が別の PC で動いているときは、ウィンドウの「送り先」にその PC のアドレスとポート(例: `192.168.1.10:9000`)を入れて「変える」を押します。次に起動したときも覚えています
+- **テスト**: チェックを入れると、何も送らずに、押しているボタンだけを見られます
+- 閉じるときは、押していたフラッシュや、暗くしていたムービングを戻してから終わります
+- ウィンドウが手前に無くても、コントローラーの操作は届きます
 
 ## 使えるコントローラー
 
@@ -24,7 +35,9 @@ cargo run --release
 | Switch の Pro Controller | USB の有線か Bluetooth | 使える |
 | そのほか SDL3 が知っているゲームパッド | それぞれ | 機種による |
 
-- Bluetooth は、Mac のシステム設定の Bluetooth でペアリングしておきます
+- Bluetooth は、OS の Bluetooth の設定でペアリングしておきます
+- **Windows で Switch 2 Pro Controller を使うとき**: 最初の合図を送る USB の入り口に、WinUSB のドライバが要るかもしれません。まだ確かめていません
+- **Linux**: udev のルールを入れないと、管理者の権限が無いとコントローラーを開けません
 - Switch 2 Pro Controller は、つないだあと最初に決まった合図を送らないと、ボタンの状態を送ってきません。このツールが合図を送ります。Bluetooth には、まだ対応していません
 - 起動したあとにコントローラーをつないでも、そのまま使えます
 
@@ -56,24 +69,31 @@ cargo run --release
 
 ## オプション
 
+コマンドで起動するときに付けられます。
+
 ```
-procon-light [--to HOST:PORT] [--movers 1,3,4] [--test] [--demo]
+procon-light [--to HOST:PORT] [--movers 1,3,4] [--test] [--demo] [--cli]
 ```
 
 - `--to`: dmxctl の OSC の送り先です。既定は `127.0.0.1` と、dmxctl の設定にある OSC のポートです。dmxctl が別のPCで動いているときに使います
 - `--movers`: 左スティックで動かすムービングの番号です。番号は dmxctl のパッチタブの ID です。既定では、dmxctl の設定から、パン・チルトがあって ARM の要らない機材を選びます。レーザーは選びません
 - `--test`: 何も送らずに、コントローラーの入力だけを見ます。ボタンの割り当てを確かめるときに使います
+- `--cli`: ウィンドウを出さずに、端末の1行に様子を出して動かします。Ctrl+C で終わります
 - `--demo`: コントローラーを使わずに、決まった操作を送り続けます。色を一周させる、ムービングを上下左右に動かす、フラッシュする、ゴボを変える、などを24秒でひとまわりします。照明やシミュレータにちゃんと届くかを確かめるときに使います
 
 dmxctl の設定は `~/Library/Application Support/dmxctl/` から読みます。dmxctl と同じく、`DMXCTL_CONFIG_DIR` で場所を変えられます。
 
 ## ビルド
 
-Rust と cmake が要ります。
+Rust と cmake が要ります。Linux では `libudev-dev` も要ります。
 
 ```
-cargo build --release
+cargo run --release
 ```
+
+- Mac の .app は `./scripts/build-mac.sh` で作れます。Apple Silicon と Intel の両方で動く1つのアプリになります
+- GitHub で `v` で始まるタグ(例: `v0.2.0`)を push すると、Mac・Windows・Linux 向けがビルドされ、Release に付きます。push と PR では、ビルドが通るかとテストを確かめます
+- 開発・確認用に、`PROCON_LIGHT_SHOT=保存先.png` で起動すると、少し待ってからウィンドウを画像に保存して閉じます
 
 コントローラーの読み取りには SDL3 を使っています。SDL3 はソースからビルドして実行ファイルに組み込むので、動かすPCに入れる必要はありません。
 
@@ -83,9 +103,13 @@ Switch 2 Pro Controller だけは、このツールで直接読みます。SDL3 
 
 | ファイル | 中身 |
 |---|---|
-| `src/main.rs` | 起動、コントローラーの読み取り、端末への表示 |
+| `src/main.rs` | 起動。オプションを読み、ウィンドウか端末(`--cli`)で動かす |
+| `src/gui.rs` | ウィンドウ。様子の表示と、送り先などの設定 |
+| `src/engine.rs` | コントローラーを読み、OSC を送り続ける。ウィンドウとは別のスレッドで動く |
 | `src/control.rs` | 入力から送るものを決める。操作の割り当てはここ。テストあり |
 | `src/osc.rs` | OSC を UDP で送る |
 | `src/rig.rs` | dmxctl の設定から、ムービングと LED バーのエフェクトを探す |
+| `src/fonts.rs` | 日本語フォントを OS から読み込む |
+| `src/shot.rs` | 開発・確認用の、ウィンドウの画像の保存 |
 | `src/demo.rs` | `--demo` で送る、決まった操作 |
 | `src/switch2.rs` | Switch 2 Pro Controller を USB で読む。最初の合図と、値の並びの読み方 |

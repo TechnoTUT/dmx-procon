@@ -66,10 +66,6 @@ impl Sender {
         Ok(Sender { sock, to })
     }
 
-    pub fn to(&self) -> SocketAddr {
-        self.to
-    }
-
     /// 届いたかは分からない(UDP)。dmxctl が動いていなくてもエラーにしない
     pub fn send(&self, m: &Msg) {
         let _ = self.sock.send_to(&m.encode(), self.to);

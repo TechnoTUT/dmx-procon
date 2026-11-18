@@ -7,7 +7,7 @@ Nintendo Switch の Pro Controller のようなゲームパッドで、照明を
 ## 使い方
 
 1. dmxctl の設定で、OSC 受信を ON にします。ポートの既定は 9000 です
-2. コントローラーをつなぎます。USB の有線でも、Bluetooth でもかまいません。Bluetooth は、Mac のシステム設定の Bluetooth でペアリングしておきます
+2. コントローラーをつなぎます。つなぎ方はコントローラーによって違います。下の「使えるコントローラー」を見てください
 3. このツールを起動します
 
 ```
@@ -15,6 +15,18 @@ cargo run --release
 ```
 
 端末の1行に、今の色・明るさ・ムービングの向きと、最後にした操作が出ます。終わるときは Ctrl+C です。押していたフラッシュは戻してから終わります。
+
+## 使えるコントローラー
+
+| コントローラー | つなぎ方 | ジャイロ・振動 |
+|---|---|---|
+| Switch 2 Pro Controller | USB の有線だけ | まだ使えない |
+| Switch の Pro Controller | USB の有線か Bluetooth | 使える |
+| そのほか SDL3 が知っているゲームパッド | それぞれ | 機種による |
+
+- Bluetooth は、Mac のシステム設定の Bluetooth でペアリングしておきます
+- Switch 2 Pro Controller は、つないだあと最初に決まった合図を送らないと、ボタンの状態を送ってきません。このツールが合図を送ります。Bluetooth には、まだ対応していません
+- 起動したあとにコントローラーをつないでも、そのまま使えます
 
 ## 操作
 
@@ -56,13 +68,15 @@ dmxctl の設定は `~/Library/Application Support/dmxctl/` から読みます�
 
 ## ビルド
 
-Rust と cmake が要ります。SDL2 はソースからビルドして実行ファイルに組み込むので、動かすPCに SDL2 を入れる必要はありません。
+Rust と cmake が要ります。
 
 ```
 cargo build --release
 ```
 
-コントローラーの読み取りには SDL2 を使っています。Pro Controller を、有線でも Bluetooth でも読めます。ジャイロと振動も SDL2 を通して使います。
+コントローラーの読み取りには SDL3 を使っています。SDL3 はソースからビルドして実行ファイルに組み込むので、動かすPCに入れる必要はありません。
+
+Switch 2 Pro Controller だけは、このツールで直接読みます。SDL3 も対応していますが、USB の2つの入り口を両方とも libusb で開こうとします。Mac では、ボタンの状態が届く入り口を OS が使っているので、管理者の権限が無いと開けません。そこで、最初の合図は libusb で送り、ボタンの状態は OS の HID の仕組みで読みます。libusb もソースからビルドして組み込むので、別に入れる必要はありません。合図の中身と値の並びは、SDL3 の `src/joystick/hidapi/SDL_hidapi_switch2.c` と同じです。
 
 ## コードの地図
 
@@ -72,3 +86,4 @@ cargo build --release
 | `src/control.rs` | 入力から送るものを決める。操作の割り当てはここ。テストあり |
 | `src/osc.rs` | OSC を UDP で送る |
 | `src/rig.rs` | dmxctl の設定から、ムービングと LED バーのエフェクトを探す |
+| `src/switch2.rs` | Switch 2 Pro Controller を USB で読む。最初の合図と、値の並びの読み方 |

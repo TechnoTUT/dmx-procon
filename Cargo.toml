@@ -5,11 +5,15 @@ edition = "2024"
 description = "Pro Controller のようなゲームパッドで、dmxctl の照明を OSC で動かす"
 
 [dependencies]
-# コントローラー(Pro Controller を有線・Bluetooth の両方で読める。ジャイロ・振動も使える)。
-# SDL2 はソースからビルドして実行ファイルに組み込む(動かすPCに SDL2 を入れなくてよい。ビルドに cmake が要る)
-sdl2 = { version = "0.38", features = ["bundled", "static-link", "hidapi"] }
+# コントローラー。Pro Controller(USB・Bluetooth)など。ジャイロ・振動も使える。Switch 2 Pro Controller は src/switch2.rs で読む
+# SDL3 はソースからビルドして実行ファイルに組み込む(ビルドに cmake が要る)。
+sdl3 = { version = "0.22", default-features = false, features = ["build-from-source-static", "hidapi"] }
 serde_json = "1"
 ctrlc = "3"
+# Switch 2 Pro Controller(USB)。始めの合図を libusb で送り、ボタンなどは HID として読む。
+# libusb はソースからビルドして組み込む(動かすPCに入れなくてよい)
+rusb = { version = "0.9", features = ["vendored"] }
+hidapi = "2"
 
 [profile.release]
 opt-level = 3

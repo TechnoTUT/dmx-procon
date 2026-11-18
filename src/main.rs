@@ -2,14 +2,20 @@
 //! コントローラーの操作を OSC にして dmxctl に送る(USB-DMX・Art-Net への出力とレーザーの安全の処理は dmxctl が受け持つ)。
 //! 操作の割り当ては src/control.rs の先頭の表
 
+// SDL3 に内蔵の hidapi と hidapi クレートが、Mac だけの関数を2つずつ持っていて、リンクで「重なっている」と出る
+// (hid_darwin_get_location_id と hid_darwin_is_device_open_exclusive)。SDL3 もこのツールもこの2つを呼ばないので、
+// どちらが使われても動きは変わらない
+#![allow(linker_messages)]
+
 mod control;
 mod osc;
 mod rig;
+mod switch2;
 
 use control::{Btn, Controller, Input};
-use sdl2::controller::{Axis, Button, GameController};
-use sdl2::event::Event;
-use sdl2::sensor::SensorType;
+use sdl3::event::Event;
+use sdl3::gamepad::{Axis, Button, ButtonLabel, Gamepad};
+use sdl3::sensor::SensorType;
 use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -81,14 +87,16 @@ fn run(opts: Options) -> Result<(), String> {
 
     // SDL の設定は、初期化の前に決める
     // 端末から動かすのでウィンドウが無い。手前のアプリでなくても入力を受ける
-    sdl2::hint::set("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1");
-    // A・B・X・Y を、ボタンに書いてある文字のとおりに読む(任天堂の並びは Xbox と逆)
-    sdl2::hint::set("SDL_GAMECONTROLLER_USE_BUTTON_LABELS", "1");
-    sdl2::hint::set("SDL_JOYSTICK_HIDAPI", "1");
-    sdl2::hint::set("SDL_JOYSTICK_HIDAPI_SWITCH", "1");
-    let sdl = sdl2::init()?;
-    let gc = sdl.game_controller()?;
-    let mut events = sdl.event_pump()?;
+    sdl3::hint::set("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1");
+    sdl3::hint::set("SDL_JOYSTICK_HIDAPI", "1");
+    sdl3::hint::set("SDL_JOYSTICK_HIDAPI_SWITCH", "1");
+    // Switch 2 Pro Controller は src/switch2.rs で読む。SDL には触らせない
+    sdl3::hint::set("SDL_JOYSTICK_HIDAPI_SWITCH2", "0");
+    sdl3::hint::set("SDL_HIDAPI_LIBUSB", "0");
+    let sdl = sdl3::init().map_err(|e| e.to_string())?;
+    let gc = sdl.gamepad().map_err(|e| e.to_string())?;
+    let mut events = sdl.event_pump().map_err(|e| e.to_string())?;
+    let mut hid = hidapi::HidApi::new().map_err(|e| format!("HID を使えません: {e}"))?;
 
     let stop = Arc::new(AtomicBool::new(false));
     {
@@ -108,7 +116,8 @@ fn run(opts: Options) -> Result<(), String> {
     println!("右スティック=色  左スティック=向き  ZR/ZL=フラッシュ  R=タップ  L=頭出し  A=入れ替え  B=暗転  X=ランダム色  Y=色相を回す");
     println!("十字上下=明るさ  十字左右=LEDエフェクト  −=パレットの色に戻す  +=一時停止  キャプチャ=ジャイロで狙う  Ctrl+C=終わる");
 
-    let mut pad: Option<GameController> = None;
+    let mut pad: Option<Pad> = None;
+    let mut looked_for_switch2 = Instant::now() - Duration::from_secs(10);
     let mut gyro: Option<(f32, f32)> = None;
     let mut last = Instant::now();
     let mut drawn = Instant::now() - Duration::from_secs(1);
@@ -118,32 +127,31 @@ fn run(opts: Options) -> Result<(), String> {
         for ev in events.poll_iter() {
             match ev {
                 Event::Quit { .. } => stop.store(true, Ordering::SeqCst),
-                Event::ControllerDeviceAdded { which, .. } if pad.is_none() => match gc.open(which) {
+                Event::GamepadAdded { which, .. } if pad.is_none() => match gc.open(which) {
+                    // Switch 2 Pro Controller は SDL では読めないので、下で別に開く
+                    Ok(c) if c.vendor_id() == Some(switch2::VENDOR) && c.product_id() == Some(switch2::PRODUCT) => {}
                     Ok(mut c) => {
                         // ジャイロが無いコントローラーもある。そのときはジャイロで狙えないだけ
-                        if c.has_sensor(SensorType::Gyroscope) {
+                        // SAFETY: 開いたばかりの有効なゲームパッドに聞くだけ
+                        let has_gyro = unsafe { c.has_sensor(SensorType::Gyroscope) };
+                        if has_gyro {
                             let _ = c.sensor_set_enabled(SensorType::Gyroscope, true);
                         }
-                        let _ = c.set_player_index(Some(0));
+                        let _ = c.set_player_index(0);
                         let _ = c.set_rumble(0x4000, 0x4000, 150);
-                        notice = format!("つながりました: {}{}", c.name(), if c.has_sensor(SensorType::Gyroscope) { "" } else { "(ジャイロなし)" });
-                        pad = Some(c);
+                        let labels = Labels::of(&c);
+                        notice = format!("つながりました: {}{}", c.name().unwrap_or_default(), if has_gyro { "" } else { "(ジャイロなし)" });
+                        pad = Some(Pad::Sdl(c, labels));
                     }
                     Err(e) => notice = format!("コントローラーを開けません: {e}"),
                 },
-                Event::ControllerDeviceRemoved { which, .. } if pad.as_ref().is_some_and(|c| c.instance_id() == which) => {
-                    // 押していたフラッシュを戻す
-                    if !opts.test {
-                        for m in ctl.release_all() {
-                            sender.send(&m);
-                        }
-                    }
-                    ctl.step(&Input::default(), 0.0);
+                Event::GamepadRemoved { which, .. } if matches!(&pad, Some(Pad::Sdl(c, _)) if c.id().ok() == Some(which)) => {
+                    disconnected(&mut ctl, &sender, opts.test);
                     pad = None;
                     gyro = None;
                     notice = "コントローラーが外れました。つなぎ直すと続けられます".into();
                 }
-                Event::ControllerSensorUpdated { sensor: SensorType::Gyroscope, data, .. } => {
+                Event::GamepadSensorUpdated { sensor: SensorType::Gyroscope, data, .. } => {
                     // SDL のゲームパッドのジャイロ: x がピッチ、y がヨー(ラジアン/秒)
                     gyro = Some((data[0], data[1]));
                 }
@@ -154,15 +162,40 @@ fn run(opts: Options) -> Result<(), String> {
         let now = Instant::now();
         let dt = now.duration_since(last).as_secs_f32().min(0.1);
         last = now;
-        if let Some(c) = &mut pad {
-            let input = read(c, gyro);
+        // Switch 2 Pro Controller(USB)は、SDL が知らせてくれないので、1秒ごとに探す
+        if pad.is_none() && looked_for_switch2.elapsed() >= Duration::from_secs(1) {
+            looked_for_switch2 = Instant::now();
+            let _ = hid.refresh_devices();
+            match switch2::Switch2::open(&hid) {
+                Ok(Some(c)) => {
+                    notice = "つながりました: Switch 2 Pro Controller(USB)".into();
+                    pad = Some(Pad::Switch2(c));
+                }
+                Ok(None) => {}
+                Err(e) => notice = e,
+            }
+        }
+        let input = match &mut pad {
+            Some(Pad::Sdl(c, labels)) => Some(read(c, labels, gyro)),
+            Some(Pad::Switch2(c)) => match c.poll() {
+                Ok(s) => Some(Input { left: s.left, right: s.right, held: s.held.clone(), gyro: None }),
+                Err(e) => {
+                    disconnected(&mut ctl, &sender, opts.test);
+                    pad = None;
+                    notice = format!("{e}。つなぎ直すと続けられます");
+                    None
+                }
+            },
+            None => None,
+        };
+        if let Some(input) = input {
             let (msgs, rumble) = ctl.step(&input, dt);
             if !opts.test {
                 for m in &msgs {
                     sender.send(m);
                 }
             }
-            if let Some(r) = rumble {
+            if let (Some(r), Some(Pad::Sdl(c, _))) = (rumble, &mut pad) {
                 let v = (r.strength.clamp(0.0, 1.0) * 65535.0) as u16;
                 let _ = c.set_rumble(v, v, r.ms);
             }
@@ -188,15 +221,47 @@ fn run(opts: Options) -> Result<(), String> {
     Ok(())
 }
 
+/// つないでいるコントローラー
+enum Pad {
+    /// SDL3 で読むもの(Pro Controller など)
+    Sdl(Gamepad, Labels),
+    /// Switch 2 Pro Controller(USB)
+    Switch2(switch2::Switch2),
+}
+
+/// コントローラーが外れたとき: 押していたフラッシュを戻し、押していないことにする
+fn disconnected(ctl: &mut Controller, sender: &osc::Sender, test: bool) {
+    if !test {
+        for m in ctl.release_all() {
+            sender.send(&m);
+        }
+    }
+    ctl.step(&Input::default(), 0.0);
+}
+
+/// A・B・X・Y が、どの位置のボタンか。SDL3 はボタンを位置(下・右・左・上)で扱い、
+/// 任天堂の並びは Xbox と逆なので、ボタンに書いてある文字から引く
+struct Labels([(Button, Btn); 4]);
+
+impl Labels {
+    fn of(c: &Gamepad) -> Labels {
+        let faces = [Button::South, Button::East, Button::West, Button::North];
+        let pick = |want: ButtonLabel, fallback: Button| faces.iter().copied().find(|&b| c.button_label_for_gamepad_type(b) == want).unwrap_or(fallback);
+        // 文字が分からないときは、任天堂の並び(右が A、下が B、上が X、左が Y)とみなす
+        Labels([
+            (pick(ButtonLabel::A, Button::East), Btn::A),
+            (pick(ButtonLabel::B, Button::South), Btn::B),
+            (pick(ButtonLabel::X, Button::North), Btn::X),
+            (pick(ButtonLabel::Y, Button::West), Btn::Y),
+        ])
+    }
+}
+
 /// コントローラーの今の状態を読む
-fn read(c: &GameController, gyro: Option<(f32, f32)>) -> Input {
+fn read(c: &Gamepad, labels: &Labels, gyro: Option<(f32, f32)>) -> Input {
     let axis = |a: Axis| (c.axis(a) as f32 / 32767.0).clamp(-1.0, 1.0);
     let mut held = Vec::new();
-    for (sdl, btn) in [
-        (Button::A, Btn::A),
-        (Button::B, Btn::B),
-        (Button::X, Btn::X),
-        (Button::Y, Btn::Y),
+    for (sdl, btn) in labels.0.iter().copied().chain([
         (Button::LeftShoulder, Btn::L),
         (Button::RightShoulder, Btn::R),
         (Button::LeftStick, Btn::LStick),
@@ -208,12 +273,12 @@ fn read(c: &GameController, gyro: Option<(f32, f32)>) -> Input {
         (Button::Back, Btn::Minus),
         (Button::Start, Btn::Plus),
         (Button::Misc1, Btn::Capture),
-    ] {
+    ]) {
         if c.button(sdl) {
             held.push(btn);
         }
     }
-    // Pro Controller の ZL・ZR は押したか押さないかだけだが、SDL では軸として届く
+    // Pro Controller の ZL・ZR は押したか押さないかだけだが、SDL では軸として届く(0〜32767)
     if axis(Axis::TriggerLeft) > 0.5 {
         held.push(Btn::ZL);
     }

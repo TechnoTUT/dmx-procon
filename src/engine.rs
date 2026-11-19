@@ -250,7 +250,7 @@ pub fn run(shared: &Shared, mut ctl: Controller, changed: &dyn Fn()) -> Result<(
             match &mut pad {
                 Some(Pad::Sdl(c, labels)) => Some(read(c, labels, gyro)),
                 Some(Pad::Switch2(c)) => match c.poll() {
-                    Ok(s) => Some(Input { left: s.left, right: s.right, held: s.held.clone(), gyro: None }),
+                    Ok(s) => Some(Input { left: s.left, right: s.right, held: s.held.clone(), gyro: s.gyro }),
                     Err(e) => {
                         send(&out, &ctl.release_all());
                         ctl.step(&Input::default(), 0.0);

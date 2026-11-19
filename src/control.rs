@@ -76,6 +76,8 @@ const HUE_CYCLE_SECS: f32 = 12.0;
 const MOVE_SPEED: f32 = 0.5;
 /// ジャイロで狙うとき、コントローラーを1ラジアン回したときに動く量
 const GYRO_GAIN: f32 = 1.0 / PI;
+/// ジャイロの、効かない小さな回転(ラジアン/秒。約2度/秒)。置いたままでもムービングが流れないように
+const GYRO_DEADZONE: f32 = 0.035;
 /// 色・向きを送る間隔の下限(秒)。dmxctl の出力は 40Hz なので、それより細かく送っても変わらない
 const SEND_EVERY: f32 = 1.0 / 30.0;
 /// dmxctl 側で、受けた色へ近づける秒数(少しだけなめらかにする)
@@ -278,8 +280,12 @@ impl Controller {
             if self.gyro_aim
                 && let Some((pitch, yaw)) = input.gyro
             {
-                // 右にひねると右へ、奥に傾けると上へ
-                self.move_on = true;
+                // 右にひねると右へ、奥に傾けると上へ。ごく小さな回転は無視する
+                let dz = |v: f32| if v.abs() > GYRO_DEADZONE { v - GYRO_DEADZONE * v.signum() } else { 0.0 };
+                let (pitch, yaw) = (dz(pitch), dz(yaw));
+                if pitch != 0.0 || yaw != 0.0 {
+                    self.move_on = true;
+                }
                 self.pan -= yaw * GYRO_GAIN * dt;
                 self.tilt += pitch * GYRO_GAIN * dt;
             }
@@ -557,7 +563,23 @@ mod tests {
         assert_eq!(c.pan, 0.5);
         c.step(&held(&[Btn::Capture]), 0.0);
         c.step(&turn, 0.25);
-        assert!((c.pan - 0.75).abs() < 1e-4, "{}", c.pan);
+        let expect = 0.5 + (PI - GYRO_DEADZONE) / PI * 0.25;
+        assert!((c.pan - expect).abs() < 1e-4, "{}", c.pan);
+    }
+
+    #[test]
+    fn a_resting_controller_does_not_drift_the_movers() {
+        let mut c = ctl();
+        c.step(&held(&[Btn::Capture]), 0.0);
+        // 置いたままでも出る、ごく小さな値
+        let rest = Input { gyro: Some((0.02, -0.03)), ..Default::default() };
+        let mut sent = 0;
+        for _ in 0..600 {
+            let (out, _) = c.step(&rest, 1.0 / 60.0);
+            sent += out.len();
+        }
+        assert_eq!((c.pan, c.tilt), (0.5, 0.5));
+        assert_eq!(sent, 0, "向きを送らない");
     }
 
     #[test]

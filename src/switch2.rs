@@ -58,11 +58,60 @@ pub struct State {
     pub left: (f32, f32),
     pub right: (f32, f32),
     pub held: Vec<Btn>,
+    /// ジャイロ(ラジアン/秒)。ピッチ(手前・奥に傾ける)とヨー(左右にひねる)。読み始めの約0.5秒は None
+    pub gyro: Option<(f32, f32)>,
+}
+
+/// ジャイロの生の値(最大 ±32767)をラジアン/秒にする係数。本体の版で2通りあり、時刻の刻みで見分ける(SDL3 と同じ)
+const GYRO_COEFF_US: f32 = 34.8;
+const GYRO_COEFF_OTHER: f32 = 40.0;
+
+/// ジャイロの補正。工場の補正値(ずれ)と、版で違う係数
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Gyro {
+    /// ピッチ・ヨーの軸のずれ(ラジアン/秒)
+    bias_x: f32,
+    bias_z: f32,
+    coeff: Option<f32>,
+    /// 係数を見分けるための、届いた数と最初の時刻
+    samples: u32,
+    first: Option<u32>,
+}
+
+impl Gyro {
+    /// 1回分の値の並びから、ピッチとヨーを読む。係数がまだ分からなければ None
+    fn read(&mut self, d: &[u8]) -> Option<(f32, f32)> {
+        let ts = u32::from_le_bytes([d[0x2b], d[0x2c], d[0x2d], d[0x2e]]);
+        if ts == 0 {
+            return None;
+        }
+        if self.coeff.is_none() {
+            // 届いた数を数え、5回目の時刻から100回分の時刻の進みで見分ける。1回は約4ms
+            self.samples += 1;
+            match self.first {
+                None if self.samples >= 5 => {
+                    self.first = Some(ts);
+                    self.samples = 0;
+                }
+                Some(first) if self.samples >= 100 => {
+                    let per = ts.wrapping_sub(first) as f32 / self.samples as f32;
+                    // マイクロ秒で刻んでいれば、1回あたり約4000
+                    self.coeff = Some(if (per - 4000.0).abs() <= 400.0 { GYRO_COEFF_US } else { GYRO_COEFF_OTHER });
+                }
+                _ => {}
+            }
+            return None;
+        }
+        let coeff = self.coeff?;
+        let raw = |i: usize| i16::from_le_bytes([d[i], d[i + 1]]) as f32 * coeff / i16::MAX as f32;
+        // SDL3 のゲームパッドの向きと同じ: x がピッチ、y がヨー
+        Some((raw(0x37) - self.bias_x, raw(0x3b) - self.bias_z))
+    }
 }
 
 /// 届いた値の並び(先頭はレポートの番号。USB では 0x05 が届く)から、状態を読む。
 /// SDL3 と同じく番号は見ず、64バイトあるものを読む
-fn parse_report(d: &[u8], left: &Stick, right: &Stick) -> Option<State> {
+fn parse_report(d: &[u8], left: &Stick, right: &Stick, gyro: &mut Gyro) -> Option<State> {
     if d.len() < 64 {
         return None;
     }
@@ -98,6 +147,7 @@ fn parse_report(d: &[u8], left: &Stick, right: &Stick) -> Option<State> {
         left: (left.x.map(x(d[11], d[12])), left.y.map(y(d[12], d[13]))),
         right: (right.x.map(x(d[14], d[15])), right.y.map(y(d[15], d[16]))),
         held,
+        gyro: gyro.read(d),
     })
 }
 
@@ -105,6 +155,7 @@ pub struct Switch2 {
     hid: hidapi::HidDevice,
     left: Stick,
     right: Stick,
+    gyro: Gyro,
     last: State,
     // 1番の入り口は、つないでいる間つかんだままにする(離すと、ほかのアプリが合図を送り直せてしまう)
     _usb: rusb::DeviceHandle<rusb::GlobalContext>,
@@ -189,6 +240,16 @@ impl Switch2 {
         if let Some(d) = bulk.read_flash(0x1fc080).filter(|d| d[0] == 0xb2 && d[1] == 0xa1) {
             right = parse_stick(&d[2..]);
         }
+        // ジャイロの工場の補正値(ずれ)。SDL3 と同じく、ピッチは x、ヨーは z のずれを引く
+        let mut gyro = Gyro::default();
+        if let Some(d) = bulk.read_flash(0x13040) {
+            let f = |i: usize| f32::from_le_bytes([d[i], d[i + 1], d[i + 2], d[i + 3]]);
+            let (bx, bz) = (f(4), f(12));
+            if bx.is_finite() && bz.is_finite() && bx.abs() < 1.0 && bz.abs() < 1.0 {
+                gyro.bias_x = bx;
+                gyro.bias_z = bz;
+            }
+        }
         for cmd in INIT {
             let len = cmd[5] as usize + 8;
             bulk.send(&cmd[..len.min(cmd.len())]).map_err(|e| format!("Switch 2 Pro Controller に合図を送れません: {e}"))?;
@@ -202,7 +263,7 @@ impl Switch2 {
             .open_device(api)
             .map_err(|e| format!("Switch 2 Pro Controller の HID を開けません: {e}"))?;
         hid.set_blocking_mode(false).map_err(|e| e.to_string())?;
-        Ok(Some(Switch2 { hid, left, right, last: State::default(), _usb: bulk.usb }))
+        Ok(Some(Switch2 { hid, left, right, gyro, last: State::default(), _usb: bulk.usb }))
     }
 
     /// 届いている値をすべて読み、最新の状態を返す。外れたら Err
@@ -215,7 +276,7 @@ impl Switch2 {
                     if std::env::var_os("PROCON_LIGHT_DUMP").is_some() {
                         eprintln!("{:02x?}", &buf[..n.min(20)]);
                     }
-                    if let Some(s) = parse_report(&buf[..n], &self.left, &self.right) {
+                    if let Some(s) = parse_report(&buf[..n], &self.left, &self.right, &mut self.gyro) {
                         self.last = s;
                     }
                 }
@@ -271,10 +332,47 @@ mod tests {
         d[14] = rx as u8;
         d[15] = ((rx >> 8) as u8 & 0x0f) | ((ry as u8 & 0x0f) << 4);
         d[16] = (ry >> 4) as u8;
-        let s = parse_report(&d, &Stick::default(), &Stick::default()).unwrap();
+        let s = parse_report(&d, &Stick::default(), &Stick::default(), &mut Gyro::default()).unwrap();
         assert_eq!(s.held, vec![Btn::A, Btn::ZR, Btn::Capture, Btn::Up]);
         assert!(s.left.0 > 0.99 && s.left.1.abs() < 1e-3);
         assert!(s.right.0.abs() < 1e-3 && s.right.1 < -0.99);
+    }
+
+    #[test]
+    fn gyro_waits_for_the_rate_then_reads_pitch_and_yaw() {
+        let mut g = Gyro { bias_x: 0.01, bias_z: -0.02, ..Default::default() };
+        let mut d = [0u8; 64];
+        // 時刻はマイクロ秒で 4000 ずつ進む
+        let put = |d: &mut [u8; 64], i: u32| d[0x2b..0x2f].copy_from_slice(&(1_000_000 + i * 4000).to_le_bytes());
+        let mut got = None;
+        for i in 0..200 {
+            put(&mut d, i);
+            // ピッチ +半分、ヨー -いっぱい
+            d[0x37..0x39].copy_from_slice(&(i16::MAX / 2).to_le_bytes());
+            d[0x3b..0x3d].copy_from_slice(&(-i16::MAX).to_le_bytes());
+            got = g.read(&d);
+            if i < 100 {
+                assert!(got.is_none(), "見分けるまでは読まない");
+            }
+        }
+        assert_eq!(g.coeff, Some(GYRO_COEFF_US));
+        let (pitch, yaw) = got.unwrap();
+        assert!((pitch - (GYRO_COEFF_US / 2.0 - 0.01)).abs() < 0.01, "{pitch}");
+        assert!((yaw - (-GYRO_COEFF_US + 0.02)).abs() < 0.01, "{yaw}");
+        // 時刻が0(ジャイロが届いていない)ときは読まない
+        d[0x2b..0x2f].copy_from_slice(&[0; 4]);
+        assert!(g.read(&d).is_none());
+    }
+
+    #[test]
+    fn gyro_uses_the_other_coefficient_when_ticks_are_not_microseconds() {
+        let mut g = Gyro::default();
+        let mut d = [0u8; 64];
+        for i in 0..120u32 {
+            d[0x2b..0x2f].copy_from_slice(&(i * 1000).wrapping_add(1).to_le_bytes());
+            g.read(&d);
+        }
+        assert_eq!(g.coeff, Some(GYRO_COEFF_OTHER));
     }
 
     #[test]

@@ -101,6 +101,8 @@ fn items(s: &Status) -> Vec<Item> {
             ..item(r(600.0, 340.0, 270.0), "Rスティック", p(RSTICK), tilted(s.right), if v.color_on { format!("色  {}°  {:.0}%", (v.hue * 360.0).round() as i32 % 360, v.sat * 100.0) } else { "色(倒すと選べる)".into() })
         },
         item(r(600.0, 384.0, 270.0), "R押し込み", p(RSTICK), held(Btn::RStick), "白".into()),
+        // 下の真ん中: HOME(持ち手の間)
+        item(r(345.0, 410.0, 210.0), "HOME", p(HOME), held(Btn::Home), if v.laser { "レーザー出力中".into() } else { "レーザー(押す間)".into() }),
     ]
 }
 
@@ -161,8 +163,14 @@ pub fn show(ui: &mut egui::Ui, s: &Status) {
     for item in &items {
         // 枠の、絵に近い側の辺から、少し横に出てから、ボタンへ
         let left = item.rect.center().x < W / 2.0;
-        let edge = pos2(if left { item.rect.right() } else { item.rect.left() }, item.rect.center().y);
-        let elbow = edge + vec2(if left { 14.0 } else { -14.0 }, 0.0);
+        let (edge, elbow) = if item.rect.top() > item.anchor.y + 100.0 {
+            // 絵の下の枠(HOME): 上の辺から真上に出て、ボタンへ
+            let edge = pos2(item.anchor.x, item.rect.top());
+            (edge, edge - vec2(0.0, 14.0))
+        } else {
+            let edge = pos2(if left { item.rect.right() } else { item.rect.left() }, item.rect.center().y);
+            (edge, edge + vec2(if left { 14.0 } else { -14.0 }, 0.0))
+        };
         let stroke = if item.active { Stroke::new(px(2.5), ON) } else { Stroke::new(px(1.0), line) };
         painter.add(Shape::line(vec![at(edge), at(elbow), at(item.anchor)], stroke));
     }
@@ -198,8 +206,7 @@ pub fn show(ui: &mut egui::Ui, s: &Status) {
     button(PLUS, 6.0, held(Btn::Plus), "");
     let cap = Rect::from_center_size(at(p(CAPTURE)), Vec2::splat(px(11.0)));
     painter.rect(cap, CornerRadius::same(px(2.0) as u8), if held(Btn::Capture) { ON } else { body }, fill_stroke, StrokeKind::Inside);
-    // ホームは使わない
-    button(HOME, 7.0, false, "");
+    button(HOME, 7.0, held(Btn::Home), "");
 
     // ---- 枠(いちばん上に描く) ----
     for item in &items {

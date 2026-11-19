@@ -36,6 +36,7 @@ pub struct View {
     pub move_on: bool,
     pub gobo: Option<String>,
     pub movers_dark: bool,
+    pub laser: bool,
 }
 
 impl View {
@@ -55,6 +56,7 @@ impl View {
             move_on: c.move_on,
             gobo: c.gobo_index.and_then(|i| c.gobos.get(i)).map(|g| g.0.clone()),
             movers_dark: c.movers_dark,
+            laser: c.laser,
         }
     }
 }
@@ -340,6 +342,7 @@ fn read(c: &Gamepad, labels: &Labels, gyro: Option<(f32, f32)>) -> Input {
         (Button::Back, Btn::Minus),
         (Button::Start, Btn::Plus),
         (Button::Misc1, Btn::Capture),
+        (Button::Guide, Btn::Home),
     ]) {
         if c.button(sdl) {
             held.push(btn);

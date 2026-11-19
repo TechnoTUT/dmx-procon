@@ -67,7 +67,7 @@ fn parse_report(d: &[u8], left: &Stick, right: &Stick) -> Option<State> {
         return None;
     }
     let mut held = Vec::new();
-    let bits: [(usize, u8, Btn); 17] = [
+    let bits: [(usize, u8, Btn); 18] = [
         (5, 0x01, Btn::Y),
         (5, 0x02, Btn::X),
         (5, 0x04, Btn::B),
@@ -78,6 +78,7 @@ fn parse_report(d: &[u8], left: &Stick, right: &Stick) -> Option<State> {
         (6, 0x02, Btn::Plus),
         (6, 0x04, Btn::RStick),
         (6, 0x08, Btn::LStick),
+        (6, 0x10, Btn::Home),
         (6, 0x20, Btn::Capture),
         (7, 0x01, Btn::Down),
         (7, 0x02, Btn::Up),

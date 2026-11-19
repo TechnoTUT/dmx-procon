@@ -18,6 +18,7 @@
 //! | − | スティックの色をやめて、dmxctl のパレットの色に戻す |
 //! | + | 一時停止(送るのを止める・再開する) |
 //! | キャプチャ | ジャイロでムービングを狙う(ON/OFF) |
+//! | HOME(押している間) | ARM済みのレーザーを出す。離すと止まる(dmxctl で ARM していなければ出ない) |
 
 use crate::osc::{Arg, Msg};
 use std::f32::consts::PI;
@@ -41,6 +42,7 @@ pub enum Btn {
     Minus,
     Plus,
     Capture,
+    Home,
 }
 
 /// 1回分の入力。スティックは -1〜1 で、上と右がプラス
@@ -78,6 +80,8 @@ const GYRO_GAIN: f32 = 1.0 / PI;
 const SEND_EVERY: f32 = 1.0 / 30.0;
 /// dmxctl 側で、受けた色へ近づける秒数(少しだけなめらかにする)
 const COLOR_SMOOTH: f32 = 0.08;
+/// HOME を押している間、レーザーの合図を送り直す間隔(秒)。dmxctl は1秒届かないと止めるので、それより短く
+const LASER_EVERY: f32 = 0.3;
 
 #[derive(Debug, Clone)]
 pub struct Controller {
@@ -102,6 +106,9 @@ pub struct Controller {
     pub gobo_index: Option<usize>,
     /// L でムービングを暗くしているか
     pub movers_dark: bool,
+    /// HOME でレーザーを出しているか
+    pub laser: bool,
+    since_laser: f32,
     pub pixel_fx: Vec<String>,
     /// 今 ON にしている LED バーのエフェクト(pixel_fx の番号)
     pub fx_index: Option<usize>,
@@ -134,6 +141,8 @@ impl Controller {
             gobos: Vec::new(),
             gobo_index: None,
             movers_dark: false,
+            laser: false,
+            since_laser: 0.0,
             pixel_fx,
             fx_index: None,
             last: String::new(),
@@ -188,6 +197,10 @@ impl Controller {
             if self.paused {
                 out.push(Msg::f("/dmx/flash", 0.0));
                 out.push(Msg::f("/dmx/flash/color", 0.0));
+                if self.laser {
+                    self.laser = false;
+                    out.push(Msg::f("/dmx/laser", 0.0));
+                }
                 if self.movers_dark {
                     self.movers_dark = false;
                     out.extend(self.movers_dimmer(false));
@@ -302,6 +315,25 @@ impl Controller {
             }
         }
 
+        // HOME: 押している間だけレーザー。送り続けないと dmxctl が止めるので、押している間は送り直す
+        if p.contains(&Btn::Home) {
+            self.laser = true;
+            self.since_laser = 0.0;
+            out.push(Msg::f("/dmx/laser", 1.0));
+            self.last = "レーザー".into();
+            rumble = Some(Rumble { strength: 0.5, ms: 60 });
+        } else if self.laser && input.has(Btn::Home) {
+            self.since_laser += dt;
+            if self.since_laser >= LASER_EVERY {
+                self.since_laser = 0.0;
+                out.push(Msg::f("/dmx/laser", 1.0));
+            }
+        }
+        if r.contains(&Btn::Home) && self.laser {
+            self.laser = false;
+            out.push(Msg::f("/dmx/laser", 0.0));
+        }
+
         // ---- 1回押す ----
         if p.contains(&Btn::R) && !self.gobos.is_empty() && !self.movers.is_empty() {
             let next = self.gobo_index.map_or(1.min(self.gobos.len() - 1), |i| (i + 1) % self.gobos.len());
@@ -370,6 +402,9 @@ impl Controller {
         if self.prev.contains(&Btn::ZL) {
             out.push(Msg::f("/dmx/flash/color", 0.0));
         }
+        if self.laser {
+            out.push(Msg::f("/dmx/laser", 0.0));
+        }
         out
     }
 
@@ -382,8 +417,8 @@ impl Controller {
     }
 }
 
-const ALL: [Btn; 17] = [
-    Btn::A, Btn::B, Btn::X, Btn::Y, Btn::L, Btn::R, Btn::ZL, Btn::ZR, Btn::LStick, Btn::RStick, Btn::Up, Btn::Down, Btn::Left, Btn::Right, Btn::Minus, Btn::Plus, Btn::Capture,
+const ALL: [Btn; 18] = [
+    Btn::A, Btn::B, Btn::X, Btn::Y, Btn::L, Btn::R, Btn::ZL, Btn::ZR, Btn::LStick, Btn::RStick, Btn::Up, Btn::Down, Btn::Left, Btn::Right, Btn::Minus, Btn::Plus, Btn::Capture, Btn::Home,
 ];
 
 /// 色相(0〜1)と鮮やかさ(0〜1)から RGB(0〜1)。明るさはいつも最大
@@ -416,6 +451,33 @@ mod tests {
 
     fn addrs(m: &[Msg]) -> Vec<&str> {
         m.iter().map(|m| m.addr.as_str()).collect()
+    }
+
+    #[test]
+    fn home_cues_the_laser_while_held_and_keeps_it_alive() {
+        let mut c = ctl();
+        let (out, _) = c.step(&held(&[Btn::Home]), 0.0);
+        assert_eq!(out, vec![Msg::f("/dmx/laser", 1.0)]);
+        // 押している間は、dmxctl の期限(1秒)より短い間隔で送り直す
+        let mut resent = 0;
+        for _ in 0..10 {
+            let (out, _) = c.step(&held(&[Btn::Home]), 0.1);
+            resent += out.iter().filter(|m| m.addr == "/dmx/laser").count();
+        }
+        assert!(resent >= 3, "1秒の間に送り直す: {resent}");
+        let (out, _) = c.step(&held(&[]), 0.1);
+        assert_eq!(out, vec![Msg::f("/dmx/laser", 0.0)]);
+        assert!(!c.laser);
+    }
+
+    #[test]
+    fn quitting_or_pausing_stops_the_laser() {
+        let mut c = ctl();
+        c.step(&held(&[Btn::Home]), 0.0);
+        assert!(c.release_all().contains(&Msg::f("/dmx/laser", 0.0)));
+        let (out, _) = c.step(&held(&[Btn::Home, Btn::Plus]), 0.0);
+        assert!(out.contains(&Msg::f("/dmx/laser", 0.0)));
+        assert!(!c.laser);
     }
 
     #[test]
